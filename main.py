@@ -510,26 +510,49 @@ class WRVUApp:
 
     def load_cms_file(self):
         """Load CMS RVU file (CSV/XLSX/ZIP)."""
-        file_path = filedialog.askopenfilename(
-            title="Select CMS RVU File",
-            filetypes=[
-                ("All supported", "*.csv;*.xlsx;*.xls;*.zip"),
-                ("CSV files", "*.csv"),
-                ("Excel files", "*.xlsx;*.xls"),
-                ("ZIP files", "*.zip"),
-                ("All files", "*.*")
-            ]
-        )
-
-        if not file_path:
-            return
-
         try:
+            file_path = filedialog.askopenfilename(
+                title="Select CMS RVU File",
+                filetypes=[
+                    ("All supported", "*.csv;*.xlsx;*.xls;*.zip"),
+                    ("CSV files", "*.csv"),
+                    ("Excel files", "*.xlsx;*.xls"),
+                    ("ZIP files", "*.zip"),
+                    ("All files", "*.*")
+                ]
+            )
+
+            if not file_path:
+                return
+
+            # Show loading message
+            self.cache_label.config(text="Loading CMS file...")
+            self.root.update()
+
             self.rvu_cache = parse_cms_rvu_file(file_path)
             self.cache_label.config(text=f"RVU cache entries: {len(self.rvu_cache)}")
-            messagebox.showinfo("Success", f"Loaded {len(self.rvu_cache)} CPT codes from CMS file.")
+
+            if len(self.rvu_cache) == 0:
+                messagebox.showwarning("No Data",
+                    f"No CPT codes found in file.\n\n"
+                    f"File: {file_path}\n\n"
+                    f"Make sure the file contains columns with:\n"
+                    f"- CPT/HCPCS codes\n"
+                    f"- Work RVU values")
+            else:
+                # Show sample CPT codes for verification
+                sample = list(self.rvu_cache.items())[:5]
+                sample_str = "\n".join([f"CPT {cpt}: {wrvu:.2f}" for cpt, wrvu in sample])
+                messagebox.showinfo("Success",
+                    f"Loaded {len(self.rvu_cache)} CPT codes from CMS file.\n\n"
+                    f"Sample entries:\n{sample_str}")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to load CMS file:\n{e}")
+            import traceback
+            error_details = traceback.format_exc()
+            messagebox.showerror("Error",
+                f"Failed to load CMS file:\n\n{str(e)}\n\n"
+                f"Details:\n{error_details[:500]}")
+            self.cache_label.config(text="RVU cache entries: 0 (load failed)")
 
     def paste_clipboard(self):
         """Paste clipboard content directly into text area."""
@@ -664,6 +687,7 @@ class WRVUApp:
         # Extract exam type from each line (before the em-dash)
         exam_types_seen = set()
         exam_type_counts = defaultdict(int)
+        exam_type_details = []  # For debugging
         total_wrvu = 0.0
         unmatched_count = 0
 
@@ -685,19 +709,26 @@ class WRVUApp:
             exam_type_counts[canonical] += 1
 
             # Calculate wRVU for this exam type
+            wrvu = 0.0
+            cpt_used = ""
             if cpts:
                 # Use first CPT code as primary (could be enhanced to pick best)
                 primary_cpt = cpts[0]
+                cpt_used = primary_cpt
                 wrvu = self.rvu_cache.get(primary_cpt, 0.0)
                 total_wrvu += wrvu
             else:
                 # Try inference fallback
                 inferred_cpts = infer_cpt_from_description(canonical, self.rvu_cache)
                 if inferred_cpts:
+                    cpt_used = inferred_cpts[0]
                     wrvu = self.rvu_cache.get(inferred_cpts[0], 0.0)
                     total_wrvu += wrvu
                 else:
                     unmatched_count += 1
+
+            # Store details for debugging
+            exam_type_details.append(f"{canonical} → CPT {cpt_used} = {wrvu:.2f} wRVU")
 
         # Calculate wRVU per hour
         wrvu_per_hour = self.compute_wrvu_per_hour(self.captured_modified_times)
@@ -720,7 +751,8 @@ class WRVUApp:
         result_msg += f"Lines: {len(lines)}\n"
         result_msg += f"Unique exam types: {len(exam_types_seen)}\n"
         result_msg += f"Recognized: {len(exam_types_seen) - unmatched_count}\n"
-        result_msg += f"Unmatched: {unmatched_count}"
+        result_msg += f"Unmatched: {unmatched_count}\n\n"
+        result_msg += "Breakdown:\n" + "\n".join(exam_type_details)
 
         messagebox.showinfo("Calculation Complete", result_msg)
 
