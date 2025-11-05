@@ -166,16 +166,24 @@ def _parse_cms_csv(file_obj) -> Dict[str, float]:
     cpt_col = None
     wrvu_col = None
 
+    # Debug: print available columns
+    print(f"DEBUG: CSV columns found: {reader.fieldnames}")
+
     for col in reader.fieldnames:
         col_lower = col.lower().strip()
-        if 'cpt' in col_lower or 'hcpcs' in col_lower or 'code' in col_lower:
-            if not cpt_col:
+        # Look for CPT/code column (more flexible)
+        if cpt_col is None:
+            if any(keyword in col_lower for keyword in ['cpt', 'hcpcs', 'code', 'proc', 'procedure']):
                 cpt_col = col
-        if 'work rvu' in col_lower or 'work_rvu' in col_lower or 'wrvu' in col_lower:
-            if not wrvu_col:
+                print(f"DEBUG: Using CPT column: {col}")
+        # Look for work RVU column (more flexible)
+        if wrvu_col is None:
+            if any(keyword in col_lower for keyword in ['work rvu', 'work_rvu', 'wrvu', 'work rvus', 'rvu']):
                 wrvu_col = col
+                print(f"DEBUG: Using wRVU column: {col}")
 
     if not cpt_col or not wrvu_col:
+        print(f"DEBUG: Missing columns - CPT: {cpt_col}, wRVU: {wrvu_col}")
         return rvu_cache
 
     for row in reader:
@@ -192,6 +200,7 @@ def _parse_cms_csv(file_obj) -> Dict[str, float]:
         except (ValueError, AttributeError):
             continue
 
+    print(f"DEBUG: Parsed {len(rvu_cache)} CPT codes from CSV")
     return rvu_cache
 
 
@@ -353,8 +362,8 @@ def _detect_delimiter(text: str) -> str:
 
 def _extract_pairs_from_tsv(text: str) -> List[Tuple[str, str]]:
     """
-    Extract (Exam Date, Modified) pairs from TSV/CSV clipboard data.
-    Returns list of (exam_date_str, modified_str) tuples.
+    Extract (Exam Description, Modified) pairs from TSV/CSV clipboard data.
+    Returns list of (exam_description_str, modified_str) tuples.
     """
     pairs = []
     delimiter = _detect_delimiter(text)
@@ -366,26 +375,31 @@ def _extract_pairs_from_tsv(text: str) -> List[Tuple[str, str]]:
     # Try to find header row
     reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
 
-    exam_date_col = None
+    exam_desc_col = None
     modified_col = None
 
     if reader.fieldnames:
         for col in reader.fieldnames:
             col_lower = col.lower().strip()
-            if 'exam' in col_lower and 'date' in col_lower:
-                exam_date_col = col
+            # Look for exam description/type column (prioritize description over date)
+            if exam_desc_col is None:
+                if 'description' in col_lower or 'exam type' in col_lower or 'procedure' in col_lower:
+                    exam_desc_col = col
+                elif col_lower in ['exam', 'exams', 'study', 'modality']:
+                    exam_desc_col = col
+            # Look for modified time column
             if 'modified' in col_lower or 'mod time' in col_lower or 'last modified' in col_lower:
                 modified_col = col
 
-        if exam_date_col and modified_col:
+        if exam_desc_col and modified_col:
             for row in reader:
-                exam_date = row.get(exam_date_col, '').strip()
+                exam_desc = row.get(exam_desc_col, '').strip()
                 modified = row.get(modified_col, '').strip()
-                if exam_date and modified:
-                    pairs.append((exam_date, modified))
+                if exam_desc and modified:
+                    pairs.append((exam_desc, modified))
             return pairs
 
-    # Fallback: regex extraction
+    # Fallback: regex extraction (first text field, last datetime)
     return _extract_pairs_by_regex(text)
 
 
@@ -470,7 +484,7 @@ class WRVUApp:
         self.cache_label.pack(side=tk.LEFT, padx=10)
 
         # Main text area for captured content
-        text_frame = ttk.LabelFrame(self.root, text="Captured Exams (Exam Date — Modified)", padding=5)
+        text_frame = ttk.LabelFrame(self.root, text="Captured Exams (Exam Type — Modified)", padding=5)
         text_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         self.text_area = scrolledtext.ScrolledText(text_frame, height=20, width=80, wrap=tk.WORD)
@@ -567,7 +581,7 @@ class WRVUApp:
         Capture from PowerScribe One:
         1. Find and focus PowerScribe One window
         2. Send PageUp, Shift+PageDown, Ctrl+C
-        3. Extract Exam Date and Modified columns
+        3. Extract Exam Description and Modified columns
         4. Append unique pairs to text area
         """
         try:
@@ -618,12 +632,20 @@ class WRVUApp:
                 messagebox.showwarning("No Data", "Captured clipboard is empty.")
                 return
 
-            # Extract pairs
+            # Extract pairs (with debug info)
+            # First, show what we captured for debugging
+            lines_preview = clip_text[:500] if len(clip_text) > 500 else clip_text
+            print(f"DEBUG: Clipboard content preview:\n{lines_preview}\n")
+
             pairs = _extract_pairs_from_tsv(clip_text)
 
             if not pairs:
+                # Show first few lines to help debug
+                first_lines = '\n'.join(clip_text.split('\n')[:5])
                 messagebox.showwarning("No Data",
-                                      "Could not extract exam date/modified pairs from clipboard.")
+                                      f"Could not extract exam description/modified pairs from clipboard.\n\n"
+                                      f"First few lines captured:\n{first_lines}\n\n"
+                                      f"Make sure the table has exam description and modified time columns.")
                 return
 
             # Apply look-back filter
